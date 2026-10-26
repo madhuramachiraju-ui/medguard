@@ -1,0 +1,8 @@
+FROM python:3.12-slim
+WORKDIR /qa
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY pytest.ini .
+COPY tools tools
+COPY tests tests
+ENTRYPOINT ["pytest"]

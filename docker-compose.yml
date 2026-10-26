@@ -1,0 +1,72 @@
+# One command brings up the whole system:  docker compose up -d --build
+# Run the QA pipeline:                      docker compose run --rm tests
+# Simulate a bad model release:             GAN_BUG=1 GAN_VERSION=1.1.0-bad docker compose up -d --build gan
+services:
+  gan:
+    build: ./gan_service
+    image: medguard-gan:${IMAGE_TAG:-local-dev}
+    environment:
+      GAN_VERSION: ${GAN_VERSION:-1.0.0}
+      GAN_BUG: ${GAN_BUG:-0}
+      GAN_SEED: ${GAN_SEED:-42}
+    ports: ["5001:5001"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u;u.urlopen('http://localhost:5001/health')"]
+      interval: 5s
+      retries: 10
+
+  app:
+    build: ./app
+    image: medguard-app:${IMAGE_TAG:-local-dev}
+    networks:
+      default:
+        aliases: [webapp]
+    environment:
+      GAN_URL: http://gan:5001
+      TESTING_ENDPOINTS: "1"      # test-only seeding endpoint; never enable in production
+      SECRET_KEY: change-me
+    depends_on:
+      gan: {condition: service_healthy}
+    ports: ["5050:5000"]
+    volumes: ["appdata:/data"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u;u.urlopen('http://localhost:5000/health')"]
+      interval: 5s
+      retries: 10
+
+  selenium:
+    image: selenium/standalone-chromium:latest   # multi-arch (works on Apple Silicon)
+    shm_size: 2gb
+    environment:
+      SE_NODE_MAX_SESSIONS: "4"
+      SE_NODE_OVERRIDE_MAX_SESSIONS: "true"
+    ports: ["4444:4444", "7900:7900"]            # 7900 = watch the browser live (noVNC)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4444/wd/hub/status"]
+      interval: 5s
+      retries: 15
+
+  tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.tests
+    image: medguard-tests:${IMAGE_TAG:-local-dev}
+    profiles: ["test"]
+    depends_on:
+      app: {condition: service_healthy}
+      selenium: {condition: service_healthy}
+    environment:
+      BASE_URL: http://webapp:5000
+      GAN_URL: http://gan:5001
+      SELENIUM_REMOTE_URL: http://selenium:4444/wd/hub
+      IMAGE_TAG: ${IMAGE_TAG:-local-dev}
+      # Jira (leave empty to use offline mock mode)
+      JIRA_BASE_URL: ${JIRA_BASE_URL:-}
+      JIRA_EMAIL: ${JIRA_EMAIL:-}
+      JIRA_API_TOKEN: ${JIRA_API_TOKEN:-}
+      JIRA_PROJECT_KEY: ${JIRA_PROJECT_KEY:-}
+      JIRA_EPIC_MAP: ${JIRA_EPIC_MAP:-{}}
+    volumes: ["./reports:/qa/reports"]
+
+volumes:
+  appdata:
